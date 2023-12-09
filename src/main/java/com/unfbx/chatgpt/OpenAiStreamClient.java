@@ -7,11 +7,11 @@ import cn.hutool.json.JSONUtil;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.unfbx.chatgpt.constant.OpenAIConst;
+import com.unfbx.chatgpt.entity.Tts.TextToSpeech;
 import com.unfbx.chatgpt.entity.billing.BillingUsage;
 import com.unfbx.chatgpt.entity.billing.CreditGrantsResponse;
 import com.unfbx.chatgpt.entity.billing.Subscription;
-import com.unfbx.chatgpt.entity.chat.ChatCompletion;
-import com.unfbx.chatgpt.entity.chat.Message;
+import com.unfbx.chatgpt.entity.chat.*;
 import com.unfbx.chatgpt.entity.common.OpenAiResponse;
 import com.unfbx.chatgpt.entity.completions.Completion;
 import com.unfbx.chatgpt.exception.BaseException;
@@ -21,7 +21,11 @@ import com.unfbx.chatgpt.function.KeyStrategyFunction;
 import com.unfbx.chatgpt.interceptor.DefaultOpenAiAuthInterceptor;
 import com.unfbx.chatgpt.interceptor.DynamicKeyOpenAiAuthInterceptor;
 import com.unfbx.chatgpt.interceptor.OpenAiAuthInterceptor;
+import com.unfbx.chatgpt.plugin.PluginAbstract;
+import com.unfbx.chatgpt.plugin.PluginParam;
 import com.unfbx.chatgpt.sse.ConsoleEventSourceListener;
+import com.unfbx.chatgpt.sse.DefaultPluginListener;
+import com.unfbx.chatgpt.sse.PluginListener;
 import io.reactivex.Single;
 import lombok.Getter;
 import lombok.SneakyThrows;
@@ -36,6 +40,7 @@ import retrofit2.adapter.rxjava2.RxJava2CallAdapterFactory;
 import retrofit2.converter.jackson.JacksonConverterFactory;
 
 import java.time.LocalDate;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -211,7 +216,7 @@ public class OpenAiStreamClient {
      * @param eventSourceListener sse监听器
      * @see ConsoleEventSourceListener
      */
-    public void streamChatCompletion(ChatCompletion chatCompletion, EventSourceListener eventSourceListener) {
+    public <T extends BaseChatCompletion> void streamChatCompletion(T chatCompletion, EventSourceListener eventSourceListener) {
         if (Objects.isNull(eventSourceListener)) {
             log.error("参数异常：EventSourceListener不能为空，可以参考：com.unfbx.chatgpt.sse.ConsoleEventSourceListener");
             throw new BaseException(CommonError.PARAM_ERROR);
@@ -240,6 +245,7 @@ public class OpenAiStreamClient {
 
     /**
      * 流式输出，最新版的GPT-3.5 chat completion 更加贴近官方网站的问答模型
+     * 警告：（不支持图片输入）
      *
      * @param messages            问答列表
      * @param eventSourceListener sse监听器
@@ -251,6 +257,94 @@ public class OpenAiStreamClient {
                 .stream(true)
                 .build();
         this.streamChatCompletion(chatCompletion, eventSourceListener);
+    }
+
+
+    /**
+     * 插件问答简易版
+     * 默认取messages最后一个元素构建插件对话
+     * 默认模型：ChatCompletion.Model.GPT_3_5_TURBO_16K_0613
+     *
+     * @param chatCompletion            参数
+     * @param eventSourceListener       sse监听器
+     * @param pluginEventSourceListener 插件sse监听器，收集function call返回信息
+     * @param plugin                    插件
+     * @param <R>                       插件自定义函数的请求值
+     * @param <T>                       插件自定义函数的返回值
+     */
+    public <R extends PluginParam, T> void streamChatCompletionWithPlugin(ChatCompletion chatCompletion, EventSourceListener eventSourceListener, PluginListener pluginEventSourceListener, PluginAbstract<R, T> plugin) {
+        if (Objects.isNull(plugin)) {
+            this.streamChatCompletion(chatCompletion, eventSourceListener);
+            return;
+        }
+        if (CollectionUtil.isEmpty(chatCompletion.getMessages())) {
+            throw new BaseException(CommonError.MESSAGE_NOT_NUL);
+        }
+        Functions functions = Functions.builder()
+                .name(plugin.getFunction())
+                .description(plugin.getDescription())
+                .parameters(plugin.getParameters())
+                .build();
+        //没有值，设置默认值
+        if (Objects.isNull(chatCompletion.getFunctionCall())) {
+            chatCompletion.setFunctionCall("auto");
+        }
+        //tip: 覆盖自己设置的functions参数，使用plugin构造的functions
+        chatCompletion.setFunctions(Collections.singletonList(functions));
+        //调用OpenAi
+        if (Objects.isNull(pluginEventSourceListener)) {
+            pluginEventSourceListener = new DefaultPluginListener(this, eventSourceListener, plugin, chatCompletion);
+        }
+        this.streamChatCompletion(chatCompletion, pluginEventSourceListener);
+    }
+
+
+    /**
+     * 插件问答简易版
+     * 默认取messages最后一个元素构建插件对话
+     * 默认模型：ChatCompletion.Model.GPT_3_5_TURBO_16K_0613
+     *
+     * @param chatCompletion      参数
+     * @param eventSourceListener sse监听器
+     * @param plugin              插件
+     * @param <R>                 插件自定义函数的请求值
+     * @param <T>                 插件自定义函数的返回值
+     */
+    public <R extends PluginParam, T> void streamChatCompletionWithPlugin(ChatCompletion chatCompletion, EventSourceListener eventSourceListener, PluginAbstract<R, T> plugin) {
+        PluginListener pluginEventSourceListener = new DefaultPluginListener(this, eventSourceListener, plugin, chatCompletion);
+        this.streamChatCompletionWithPlugin(chatCompletion, eventSourceListener, pluginEventSourceListener, plugin);
+    }
+
+
+    /**
+     * 插件问答简易版
+     * 默认取messages最后一个元素构建插件对话
+     * 默认模型：ChatCompletion.Model.GPT_3_5_TURBO_16K_0613
+     *
+     * @param messages            问答参数
+     * @param eventSourceListener sse监听器
+     * @param plugin              插件
+     * @param <R>                 插件自定义函数的请求值
+     * @param <T>                 插件自定义函数的返回值
+     */
+    public <R extends PluginParam, T> void streamChatCompletionWithPlugin(List<Message> messages, EventSourceListener eventSourceListener, PluginAbstract<R, T> plugin) {
+        this.streamChatCompletionWithPlugin(messages, ChatCompletion.Model.GPT_3_5_TURBO_16K_0613.getName(), eventSourceListener, plugin);
+    }
+
+    /**
+     * 插件问答简易版
+     * 默认取messages最后一个元素构建插件对话
+     *
+     * @param messages            问答参数
+     * @param model               模型
+     * @param eventSourceListener eventSourceListener
+     * @param plugin              插件
+     * @param <R>                 插件自定义函数的请求值
+     * @param <T>                 插件自定义函数的返回值
+     */
+    public <R extends PluginParam, T> void streamChatCompletionWithPlugin(List<Message> messages, String model, EventSourceListener eventSourceListener, PluginAbstract<R, T> plugin) {
+        ChatCompletion chatCompletion = ChatCompletion.builder().messages(messages).model(model).build();
+        this.streamChatCompletionWithPlugin(chatCompletion, eventSourceListener, plugin);
     }
 
     /**
@@ -307,7 +401,7 @@ public class OpenAiStreamClient {
      *
      * @param starDate 开始时间
      * @param endDate  结束时间
-     * @return  消耗金额信息
+     * @return 消耗金额信息
      */
     public BillingUsage billingUsage(@NotNull LocalDate starDate, @NotNull LocalDate endDate) {
         Single<BillingUsage> billingUsage = this.openAiApi.billingUsage(starDate, endDate);
